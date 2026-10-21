@@ -30,9 +30,9 @@ export function collectReadingIssues(result: ReadingResult, source: PaperSource)
   const assets = new Map(result.assets.map(a => [a.id, a]));
   if (assets.size !== result.assets.length) issues.push('图表 ID 重复');
   for (const asset of result.assets) {
-    if ((!/^(Figure|Table|Algorithm)\s+(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*[a-z]?|[IVXLCDM]+)(?:\([a-z]\))?$/i.test(asset.id) && !unnumberedLocator(asset.id)) ||
+    if ((!/^(Figure|Table|Algorithm|Listing)\s+(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*[a-z]?|[IVXLCDM]+)(?:\([a-z]\))?$/i.test(asset.id) && !unnumberedLocator(asset.id)) ||
       !/^figures\/[A-Za-z0-9_.-]+\.png$/.test(asset.path) || asset.page < 1 || asset.page > source.pageCount) {
-      issues.push('图表编号、路径或原文页码无效');
+      issues.push(`${asset.id} 图表编号、路径或原文页码无效`);
     }
     issues.push(...assetProvenanceIssues(asset, source));
     if (!text.includes(`{{asset:${asset.id}}}`)) issues.push(`${asset.id} 没有放在正文解释附近`);

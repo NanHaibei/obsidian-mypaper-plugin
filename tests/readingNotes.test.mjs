@@ -50,6 +50,13 @@ test('structurally valid incomplete drafts are retained but can never be written
  assert.throws(()=>validateReadingNote(parsed,source),/The PDF cannot be accessed/);
  r.assets[0].captionStatus='unknown';assert.throws(()=>parseReadingResult(JSON.stringify(r)),/格式无效/);
 });
+test('original code listing numbers and captions are preserved rather than relabelled as algorithms',()=>{
+ const r=validResult();r.assets.push({id:'Listing I',path:'figures/listing.png',page:1,captionSource:'Listing I: Python-like pseudocode (simplified).',captionChinese:'代码清单 I：类 Python 伪代码（简化版）。'});
+ r.sourceInventory.push('Listing 1');r.markdown+='\n\n{{asset:Listing I}}';
+ const s={...source,text:source.text+'\nListing I: Python-like pseudocode (simplified).',captions:['Figure 1','Listing I']};
+ assert.doesNotThrow(()=>validateReadingNote(r,s));r.assets[1].captionSource='Listing I: Optimized Python code.';
+ assert.throws(()=>validateReadingNote(r,s),/原始图注/);
+});
 
 test('settings migration keeps connection/model choices and removes the old prompt, switch and format', () => {
   const settings = normalizeReadingSettings({ model: 'chosen', effort: 'high', proxyUrl: 'http://localhost:7890',

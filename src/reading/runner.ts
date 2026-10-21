@@ -89,7 +89,7 @@ export function runReadingSkill(settings: ReadingSettings, cwd: string, skillPat
         } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
       }
     });
-    send('initialize', { clientInfo: { name: 'mypaper_reading_skill', version: '1.1.2' } }, () => {
+    send('initialize', { clientInfo: { name: 'mypaper_reading_skill', version: '1.1.3' } }, () => {
       child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
       send('thread/start', { cwd, model: settings.model || null, sandbox: 'workspace-write', approvalPolicy: 'never',
         config: { 'project_doc_max_bytes': 0 }, developerInstructions:

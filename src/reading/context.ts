@@ -120,8 +120,8 @@ export async function preparePaperSource(paper: PaperInfo, directory: string, si
   const text = pages.map(p => p.text).join('\n\n');
   if (text.trim().length < 1000) throw new Error('PDF 可提取的文字不足，未将摘要或扫描图片误作完整原文');
   await fs.writeFile(path.join(directory, 'source-text.json'), JSON.stringify({ url: sourceUrl, pages }, null, 2));
-  const captions = [...new Set([...text.matchAll(/(?:^|\n)\s*(Figure|Fig\.?|Table|Algorithm)\s+((?:[A-Z]\.?)?\d+(?:\.\d+)*|[IVXLCDM]+)\s*[:.]/gi)]
-    .map(m => `${/^table$/i.test(m[1]!) ? 'Table' : /^algorithm$/i.test(m[1]!) ? 'Algorithm' : 'Figure'} ${m[2]}`))];
+  const captions = [...new Set([...text.matchAll(/(?:^|\n)\s*(Figure|Fig\.?|Table|Algorithm|Listing)\s+((?:[A-Z]\.?)?\d+(?:\.\d+)*|[IVXLCDM]+)\s*[:.]/gi)]
+    .map(m => `${/^table$/i.test(m[1]!) ? 'Table' : /^algorithm$/i.test(m[1]!) ? 'Algorithm' : /^listing$/i.test(m[1]!) ? 'Listing' : 'Figure'} ${m[2]}`))];
   return { url: sourceUrl, text, pageCount: pages.length, captions, pageTexts: pages.map(page => page.text) };
 }
 

@@ -62,7 +62,7 @@ description: Read an academic paper and prepare complete evidence-backed teachin
 
 - 最终只返回宿主指定 JSON：`complete`、`markdown`、`assets`、`sourceInventory`、`missing`。正文直接从“1. 问题背景”开始，不添加论文大标题、AI 论文精读导师标题或交互式开场。
 - assets 每项包含 `id`、相对路径 `path`、`captionSource`、`captionChinese`、PDF `page`、`captionStatus`（`present` 或 `absent`）和 `sourceExcerpt`。captionChinese 本身不加 ✦，由插件在图注末尾统一添加。
-- 图表 ID 支持 `Figure 9(a)`、`Table II`、`Algorithm 1` 等原文编号。原文算法也可使用保留完整算法本体的原始截图；分图的总 caption 和面板说明应分别核对，按逻辑合并，不把 PDF 提取顺序误当阅读顺序。
+- 图表 ID 支持 `Figure 9(a)`、`Table II`、`Algorithm 1`、`Listing 1` 等原文编号。原文算法和代码清单使用保留完整本体的原始截图，不改造其编号类型；中文说明使用“算法”“代码清单”等相应名称，专有名称可以保留原文。分图的总 caption 和面板说明应分别核对，按逻辑合并，不把 PDF 提取顺序误当阅读顺序。
 - 原始 `captionSource` 按原文保留事实、数值与限定条件；不得将正文概括冒充图注。公式在 JSON 编码时只做一次必要转义，解析后的 MathJax 命令使用单个反斜杠。
 - 如本次提示要求自动核对，读取 `recovery-input.json` 的现有结果和全部问题；只修复必要部分并复用有效图片，不从零重写。不能证实的内容明确列入 missing，不为通过校验而改造事实。
 - `sourceInventory` 列出原文中应收录的方法图、实验图与原表 ID；必须全部有对应资产并在正文就近引用。对无法取得或可靠裁切的相关图表返回 `complete:false` 并列出 missing，不能伪称完成。

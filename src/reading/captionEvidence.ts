@@ -11,7 +11,7 @@ export function captionEvidence(text: string): string {
 }
 
 export function normalizedFigureId(id: string): string {
-  return id.replace(/^(Figure|Table|Algorithm)\s+([IVXLCDM]+)(?=$|[a-z(])/i, (_all, kind: string, roman: string) => {
+  return id.replace(/^(Figure|Table|Algorithm|Listing)\s+([IVXLCDM]+)(?=$|[a-z(])/i, (_all, kind: string, roman: string) => {
     const values: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
     const digits = roman.toUpperCase().split('').map(char => values[char]!);
     const number = digits.reduce((sum, value, i) => sum + (value < (digits[i + 1] || 0) ? -value : value), 0);
@@ -50,7 +50,7 @@ export function captionMatchesSource(asset: ReadingAsset, source: PaperSource): 
   if (!panel) return false;
   const parts = asset.captionSource.split(/(?=\([a-z]\)\s*)/i).map(x => x.trim()).filter(Boolean);
   const parent = asset.id.replace(/(?:\([a-z]\)|[a-z])$/i, '');
-  const label = /^(?:Figure|Fig\.?|Table|Algorithm)\s+(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*|[IVXLCDM]+)(?=[:.\s]|$)/i.exec(parts[0] || '')?.[0];
+  const label = /^(?:Figure|Fig\.?|Table|Algorithm|Listing)\s+(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*|[IVXLCDM]+)(?=[:.\s]|$)/i.exec(parts[0] || '')?.[0];
   if (parts.length < 2 || !label || normalizedFigureId(label.replace(/^Fig\.?\s/i, 'Figure ')) !== normalizedFigureId(parent)) return false;
   const letter = (panel[1] || panel[2])!.toLowerCase();
   if (!parts.some(part => part.toLowerCase().startsWith(`(${letter})`))) return false;
