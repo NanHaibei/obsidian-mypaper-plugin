@@ -172,6 +172,8 @@ export class PaperReading {
         if (pageTexts) job.source.pageTexts = pageTexts;
       }
       progress('检查正文、图注、公式与全部图片');
+      // Cached drafts must use the current repair instructions after a plugin update, too.
+      await copySkill(skillDirectory);
       let verified = new Map<string, Uint8Array>();
       job.result = await reviewReadingResult(job, job.source, {
         inspectAssets: async result => { const inspected = await inspectReadingAssets(directory, result); verified = inspected.files; return inspected.issues; },

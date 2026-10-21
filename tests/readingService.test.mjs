@@ -14,7 +14,7 @@ const source = {url:'https://arxiv.org/pdf/1706.03762',text:'Figure 1: Framework
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ioAAAAASUVORK5CYII=','base64');
 class TFile {constructor(p){this.path=p;this.basename=path.basename(p,'.md');this.content='## 笔记\n我写的想法\n';this.parent={path:path.dirname(p)};}}
 class Adapter {constructor(base){this.base=base;}getBasePath(){return this.base;}async exists(p){return !!await import('node:fs/promises').then(fs=>fs.access(path.join(this.base,p)).then(()=>true,()=>false));}async write(p,s){await mkdir(path.dirname(path.join(this.base,p)),{recursive:true});await writeFile(path.join(this.base,p),s);}async read(p){return readFile(path.join(this.base,p),'utf8');}async remove(p){await rm(path.join(this.base,p));}async writeBinary(p,b){await this.write(p,Buffer.from(b));}}
-async function setup(runner,beforeLoad) {
+async function setup(runner,beforeLoad,preparedSource=source) {
  const base=await mkdtemp(path.join(tmpdir(),'paper-reading-service-'));const dir='.obsidian/plugins/test';
  await mkdir(path.join(base,dir,'skills/write-obsidian-paper-notes'),{recursive:true});await writeFile(path.join(base,dir,'skills/write-obsidian-paper-notes/SKILL.md'),'test skill');
  const files=new Map(),handlers={},cleanup=[];const host={settings:{workspaceFolder:'Papers',paperReading:{executable:'codex',proxyUrl:'',model:'first-model',effort:'high',timeoutMinutes:1}},manifest:{id:'test',dir},register:f=>cleanup.push(f),registerEvent(){},addCommand(){},app:{workspace:{onLayoutReady(){}},vault:{adapter:new Adapter(base),configDir:'.obsidian',on:(n,f)=>{handlers[n]=f;},getAbstractFileByPath:p=>files.get(p),read:async f=>f.content,process:async(f,fn)=>{f.content=fn(f.content);}}}};
@@ -23,7 +23,7 @@ async function setup(runner,beforeLoad) {
  vm.runInNewContext(bundle.outputFiles[0].text,{module,exports:module.exports,process,URL,Blob,AbortController,console,setInterval,clearInterval,
  createImageBitmap:async()=>({width:1,height:1,close(){}}),
  require:n=>n==='obsidian'?{TFile,FileSystemAdapter:Adapter,Notice:class{},Platform:{isDesktopApp:true},getFrontMatterInfo:()=>({exists:false}),parseYaml:()=>({})}:require(n),
- prepare:async(_paper,cwd)=>{prepared++;await mkdir(path.join(cwd,'figures'),{recursive:true});await writeFile(path.join(cwd,'source-text.json'),'{}');await writeFile(path.join(cwd,'figures/fig1.png'),png);return {...source};},runner});
+ prepare:async(_paper,cwd)=>{prepared++;await mkdir(path.join(cwd,'figures'),{recursive:true});await writeFile(path.join(cwd,'source-text.json'),'{}');await writeFile(path.join(cwd,'figures/fig1.png'),png);return {...preparedSource};},runner});
  if(beforeLoad)await beforeLoad({base,dir,host,files});
  const reading=new module.exports.PaperReading(host);
  return {reading,host,handlers,files,base,get prepared(){return prepared;},add(p){const f=new TFile(p);files.set(p,f);return f;},async dispose(){cleanup.forEach(f=>f());await rm(base,{recursive:true,force:true});}};
@@ -87,6 +87,17 @@ test('missing asset files are automatically corrected before any note body is wr
  let calls=0;const h=await setup(async()=>{calls++;const output=result();if(calls===1)output.assets[0].path='figures/missing.png';return output;});
  try{const file=h.add('Papers/Unread/one.md');await h.reading.enqueue(file,paper('one','1706.03762'));await until(()=>h.reading.jobs[0].status==='completed');assert.equal(calls,2);assert.equal(h.prepared,1);assert.match(file.content,/图 1：框架。✦/);}
  finally{await h.dispose();}
+});
+
+test('layout and embedded drawing differences finish without paying for an unnecessary model correction',async()=>{
+ let calls=0;const text='Figure 1: A two-\ndimensional repre-\nsentation (star shape   ).';
+ const h=await setup(async()=>{calls++;const output=result();output.assets[0].captionSource='Figure 1: A two-dimensional representation (star shape ★).';output.assets[0].captionChinese='图 1：二维表示（星形 ★）。';return output;},undefined,{...source,text,pageTexts:[text]});
+ try{
+  const file=h.add('Papers/Unread/one.md');await h.reading.enqueue(file,paper('one','1706.03762'));
+  await until(()=>h.reading.jobs[0].status==='completed');const job=h.reading.jobs[0];
+  assert.equal(calls,1);assert.equal(job.repairAttempts||0,0);assert.equal(job.repairs.length,1);
+  assert.match(file.content,/星形 ★/);assert.equal(h.prepared,1);
+ }finally{await h.dispose();}
 });
 
 test('old rejected drafts are recovered on load and written without another model call',async()=>{

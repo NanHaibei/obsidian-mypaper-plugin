@@ -13,7 +13,7 @@ export async function reviewReadingResult(job: ReadingJob, source: PaperSource, 
 }): Promise<ReadingResult> {
   if (!job.result) throw new Error('缺少已生成的阅读草稿');
   for (;;) {
-    const normalized = normalizeReadingResult(job.result);
+    const normalized = normalizeReadingResult(job.result, source);
     job.result = normalized.result;
     job.repairs = [...new Set([...(job.repairs || []), ...normalized.repairs])];
     const issues = [...new Set([...collectReadingIssues(job.result, source), ...await callbacks.inspectAssets(job.result)])];

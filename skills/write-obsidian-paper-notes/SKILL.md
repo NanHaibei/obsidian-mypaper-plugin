@@ -52,6 +52,7 @@ description: Read an academic paper and prepare complete evidence-backed teachin
 - 使用 `task.json` 的 `pythonExecutable` 运行 `scripts/crop_figure.py`，对 `source-pages/` 中的原页面截图裁切，输出到当前任务的 `figures/`。图片必须只有图像本体或完整表头和表体，不包含原始 caption，也不能混入整页正文。查看裁切结果，必要时修正边界。脚本需要 Python 3 与 Pillow；依赖不可用时明确列为未完成项，不安装依赖或改系统配置。
 - 论文实验表格以原表截图收录，不转录或重建成 Markdown 表格。AI 自行整理的简单对比表仍可使用 Markdown，并按标记规则在下一段独立写 `✦`。
 - 完整提取原 caption，在 `captionSource` 保留原文，在 `captionChinese` 完整翻译并保留 Figure/Table 编号。逐句核对主体、动作、条件、数值、单位、比较对象、限定词和结论方向；额外读图分析放正文。
+- `captionSource` 是供机器核对的 PDF 文字层证据，应从对应页 `source-text.json` 复制完整图注文字，不纠正原文拼写，不手工重录公式字形。PDF 图注有时嵌入星形、圆点等小图片，文字层会留空；必须查看原页，在 `captionChinese` 忠实保留这些图形符号或其含义，但不要把文字层不存在的符号补入 `captionSource`。正文和中文图注不能因文字层缺字而丢失含义。断行连字符可以按实际词形合并。
 - 在正文需要插图的位置写 `{{asset:图或表ID}}`，例如 `{{asset:Figure 1}}`；插件替换为本地嵌入及中文图注。每个 ID 对应 assets 中唯一条目；同一幅图包含多个区域时分别裁切并用明确的子图 ID。不要输出远程图片、本地绝对路径或猜测附件路径。
 - 行内公式使用 `$...$`，块级公式使用独立的 `$$` 行。不得以普通文字或代码显示 LaTeX。上下标操作数全部加花括号，例如 `x_{t}`、`q^{*}`、`a_{t-1}^{(k)}`。不向纯公式内部添加 `✦`。
 
