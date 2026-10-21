@@ -1,8 +1,15 @@
 import { App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import MyPlugin from './main';
 import { FieldStyle, IdeaItem } from './types';
+import { renderFieldPaletteSetting } from './ui/FieldPaletteSetting';
+import { renderPalettePicker } from './ui/PalettePicker';
+import { applyPaperPalette, PaperPalette } from './utils/colorPalettes';
+import { PAPER_VIEW_TYPE, PaperView } from './ui/PaperView';
+import { ClassificationOrganizerModal } from './ui/classification/ClassificationOrganizerModal';
+import { DEFAULT_READING_SETTINGS, ReadingSettings } from './reading/config';
 
 export interface MyPluginSettings {
+  paperReading: ReadingSettings;
   workspaceFolder: string;
   unreadFolderName: string;
   readFolderName: string;
@@ -102,6 +109,7 @@ export const DEFAULT_FIELDS: FieldStyle[] = [
 ];
 
 export const DEFAULT_SETTINGS: MyPluginSettings = {
+  paperReading: DEFAULT_READING_SETTINGS,
   workspaceFolder: '',
   unreadFolderName: '未阅读论文列表',
   readFolderName: '已阅读论文列表',
@@ -124,9 +132,14 @@ export class PaperSettingTab extends PluginSettingTab {
   constructor(app: App, plugin: MyPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+    plugin.register(() => this.hide());
+  }
+
+  hide(): void {
   }
 
   display(): void {
+    this.hide();
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl('h2', { text: '论文管理' });
@@ -219,17 +232,18 @@ export class PaperSettingTab extends PluginSettingTab {
     this.addSectionHeader(containerEl, '数据源');
 
     new Setting(containerEl)
-      .setName('IEEE Xplore API Key')
-      .setDesc('用于搜索 IEEE 数据库（可选）')
-      .addText(text =>
+      .setName('IEEE Xplore API key')
+      .setDesc('可选。留空时，选择 IEEE 并搜索会将标题或 DOI 发送到 Crossref；文献链接会请求 IEEE 页面。填写后使用 IEEE 官方接口，并向 IEEE 发送检索内容和 Key。不会上传笔记内容。')
+      .addText(text => {
+        text.inputEl.type = 'password';
         text
           .setPlaceholder('输入 API Key')
           .setValue(this.plugin.settings.ieeeApiKey)
           .onChange(async value => {
             this.plugin.settings.ieeeApiKey = value.trim();
             await this.plugin.saveSettings();
-          })
-      );
+          });
+      });
 
     // ── 摘要翻译 ────────────────────────────────────────────────────────────
     this.addSectionHeader(containerEl, '摘要翻译');
@@ -278,10 +292,15 @@ export class PaperSettingTab extends PluginSettingTab {
           });
       });
 
-    // ── 领域管理 ─────────────────────────────────────────────────────────
+
+    new Setting(containerEl)
+      .setName('主领域与子领域')
+      .setDesc('查看分类建议、重命名或合并领域、批量调整论文分类。应用前自动备份，可恢复历史分类。')
+      .addButton(button => button.setButtonText('整理分类').onClick(() => this.openClassificationOrganizer()));
+
     this.addSectionHeader(containerEl, '领域样式');
     containerEl.createEl('p', {
-      text: '管理不同研究领域的卡片样式。添加论文时会选择领域，卡片会应用对应的样式。',
+      text: '选择背景色或调整领域卡片样式。',
       cls: 'setting-item-description'
     });
 
@@ -441,51 +460,16 @@ export class PaperSettingTab extends PluginSettingTab {
       nameInput.style.background = 'transparent';
       nameInput.style.color = 'var(--text-normal)';
       nameInput.style.width = '200px';
-      nameInput.addEventListener('change', async () => {
-        if (this.plugin.settings.fields[index]!) this.plugin.settings.fields[index].name = nameInput.value;
-        await this.plugin.saveSettings();
-        // 刷新标签按钮文字
-        const tabsNav = fieldsContainer.querySelector('.pm-tabs-nav');
-        if (tabsNav) {
-          const tabBtn = tabsNav.querySelectorAll('.pm-tab-btn')[index] as HTMLElement;
-          if (tabBtn) tabBtn.textContent = nameInput.value;
-        }
-      });
+      nameInput.readOnly = true;
+      nameInput.title = '在“整理分类”中修改名称，同时同步论文标签';
 
       // 右侧按钮组
       const btnGroup = header.createDiv();
       btnGroup.style.display = 'flex';
       btnGroup.style.gap = '8px';
 
-      // 添加关联领域按钮
-      const addAliasBtn = btnGroup.createEl('button', {
-        text: '+ 关联',
-      });
-      addAliasBtn.style.padding = '4px 12px';
-      addAliasBtn.style.fontSize = '12px';
-      addAliasBtn.style.cursor = 'pointer';
-      addAliasBtn.addEventListener('click', () => {
-        this.showAddAliasModal(field, index, fieldItem);
-      });
-
-      const deleteBtn = btnGroup.createEl('button', {
-        text: '删除',
-        cls: 'mod-warning',
-      });
-      deleteBtn.style.padding = '4px 12px';
-      deleteBtn.addEventListener('click', async () => {
-        if (this.plugin.settings.fields.length <= 1) {
-          new Notice('至少保留一个领域样式');
-          return;
-        }
-        this.plugin.settings.fields.splice(index, 1);
-        // 调整 activeFieldIndex
-        if (this.activeFieldIndex >= this.plugin.settings.fields.length) {
-          this.activeFieldIndex = this.plugin.settings.fields.length - 1;
-        }
-        await this.plugin.saveSettings();
-        this.display();
-      });
+      const editTaxonomy = btnGroup.createEl('button', { text: '整理分类' });
+      editTaxonomy.addEventListener('click', () => this.openClassificationOrganizer());
 
       // 关联领域显示区域
       if (field.aliases && field.aliases.length > 0) {
@@ -496,12 +480,12 @@ export class PaperSettingTab extends PluginSettingTab {
         aliasesContainer.style.gap = '6px';
         aliasesContainer.style.alignItems = 'center';
 
-        const aliasesLabel = aliasesContainer.createEl('span', { text: '关联领域:' });
+        const aliasesLabel = aliasesContainer.createEl('span', { text: '子领域：' });
         aliasesLabel.style.fontSize = '12px';
         aliasesLabel.style.color = 'var(--text-muted)';
         aliasesLabel.style.marginRight = '4px';
 
-        field.aliases.forEach((alias, aliasIndex) => {
+        field.aliases.forEach(alias => {
           const aliasTag = aliasesContainer.createDiv({ cls: 'pm-alias-tag' });
           aliasTag.style.display = 'inline-flex';
           aliasTag.style.alignItems = 'center';
@@ -514,23 +498,21 @@ export class PaperSettingTab extends PluginSettingTab {
 
           aliasTag.createEl('span', { text: alias });
 
-          const removeBtn = aliasTag.createEl('span', { text: '×' });
-          removeBtn.style.cursor = 'pointer';
-          removeBtn.style.marginLeft = '4px';
-          removeBtn.style.fontWeight = 'bold';
-          removeBtn.addEventListener('click', async () => {
-            if (this.plugin.settings.fields[index]?.aliases) {
-              this.plugin.settings.fields[index].aliases!.splice(aliasIndex, 1);
-              await this.plugin.saveSettings();
-              this.display();
-            }
-          });
         });
       }
 
       // 样式设置
       this.addFieldStyleSetting(fieldItem!, field, index);
     });
+  }
+
+  private openClassificationOrganizer(): void {
+    new ClassificationOrganizerModal(this.app, this.plugin, async () => {
+      this.activeFieldIndex = Math.min(this.activeFieldIndex, this.plugin.settings.fields.length - 1);
+      this.display();
+      await Promise.allSettled(this.app.workspace.getLeavesOfType(PAPER_VIEW_TYPE)
+        .map(leaf => (leaf.view as PaperView).render()));
+    }).open();
   }
 
   // 显示添加关联领域的弹窗
@@ -611,40 +593,24 @@ export class PaperSettingTab extends PluginSettingTab {
     const controls = containerEl.createDiv({ cls: 'pm-field-controls' });
     controls.style.marginTop = '16px';
 
+    renderFieldPaletteSetting(controls, {
+      field,
+      save: async () => {
+        await this.plugin.saveSettings();
+        await Promise.allSettled(this.app.workspace.getLeavesOfType(PAPER_VIEW_TYPE)
+          .map(leaf => (leaf.view as PaperView).render()));
+      },
+      onChanged: () => {
+        this.updateFieldPreview(cardPreview, field);
+        this.updateFontPreview(fontPreview, field);
+      },
+    });
+
     // ── 核心设置（常用）────────────────────────────────────────────
     const coreSettings = controls.createDiv();
     coreSettings.style.display = 'grid';
     coreSettings.style.gridTemplateColumns = 'repeat(3, 1fr)';
     coreSettings.style.gap = '8px';
-
-    // 背景色
-    new Setting(coreSettings)
-      .setName('背景色')
-      .addColorPicker(colorPicker => {
-        colorPicker
-          .setValue(field.backgroundColor)
-          .onChange(async value => {
-            if (this.plugin.settings.fields[index]) this.plugin.settings.fields[index]!.backgroundColor = value;
-            await this.plugin.saveSettings();
-            this.updateFieldPreview(cardPreview, this.plugin.settings.fields[index]!);
-            this.updateFontPreview(fontPreview, this.plugin.settings.fields[index]!);
-            fontPreview.style.background = value;
-          });
-      });
-
-    // 边框色
-    new Setting(coreSettings)
-      .setName('边框色')
-      .addColorPicker(colorPicker => {
-        colorPicker
-          .setValue(field.borderColor)
-          .onChange(async value => {
-            if (this.plugin.settings.fields[index]) this.plugin.settings.fields[index]!.borderColor = value;
-            await this.plugin.saveSettings();
-            this.updateFieldPreview(cardPreview, this.plugin.settings.fields[index]!);
-            this.updateFontPreview(fontPreview, this.plugin.settings.fields[index]!);
-          });
-      });
 
     // 纹理类型
     new Setting(coreSettings)
@@ -658,34 +624,6 @@ export class PaperSettingTab extends PluginSettingTab {
           .setValue(field.backgroundPattern || 'solid')
           .onChange(async value => {
             if (this.plugin.settings.fields[index]) this.plugin.settings.fields[index]!.backgroundPattern = value as any;
-            await this.plugin.saveSettings();
-            this.updateFieldPreview(cardPreview, this.plugin.settings.fields[index]!);
-            this.updateFontPreview(fontPreview, this.plugin.settings.fields[index]!);
-          });
-      });
-
-    // 标题颜色
-    new Setting(coreSettings)
-      .setName('标题颜色')
-      .addColorPicker(colorPicker => {
-        colorPicker
-          .setValue(field.titleTextColor || field.textColor)
-          .onChange(async value => {
-            if (this.plugin.settings.fields[index]) this.plugin.settings.fields[index]!.titleTextColor = value;
-            await this.plugin.saveSettings();
-            this.updateFieldPreview(cardPreview, this.plugin.settings.fields[index]!);
-            this.updateFontPreview(fontPreview, this.plugin.settings.fields[index]!);
-          });
-      });
-
-    // 正文颜色
-    new Setting(coreSettings)
-      .setName('正文颜色')
-      .addColorPicker(colorPicker => {
-        colorPicker
-          .setValue(field.metaTextColor || field.textColor)
-          .onChange(async value => {
-            if (this.plugin.settings.fields[index]) this.plugin.settings.fields[index]!.metaTextColor = value;
             await this.plugin.saveSettings();
             this.updateFieldPreview(cardPreview, this.plugin.settings.fields[index]!);
             this.updateFontPreview(fontPreview, this.plugin.settings.fields[index]!);
@@ -900,9 +838,11 @@ export class PaperSettingTab extends PluginSettingTab {
       4: 'Comic', // Comic Sans
     };
 
+    preview.style.background = field.backgroundColor;
+    preview.style.color = field.metaTextColor || field.textColor;
     preview.innerHTML =
       '<div style="height: 100%;">' +
-        '<div style="margin-bottom: 16px; color: #000000; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">字体预览</div>' +
+        '<div style="margin-bottom: 16px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">字体预览</div>' +
         '<div style="margin-bottom: 24px;">' +
           '<div style="font-size: ' + (field.titleFontSize || 14) + 'px; font-family: ' + fontFamilyMap[field.titleFontFamily] + '; color: ' + (field.titleTextColor || field.textColor) + '; margin-bottom: 8px; font-weight: 600; text-align: ' + (field.titleAlignment || 'left') + ';">' +
             '论文标题字体效果 Title Font Preview' +
@@ -912,8 +852,8 @@ export class PaperSettingTab extends PluginSettingTab {
           '</div>' +
         '</div>' +
         '<div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(0,0,0,0.2);">' +
-          '<div style="font-size: 12px; color: #000000; margin-bottom: 8px; font-weight: 600;">字体设置信息</div>' +
-          '<div style="font-size: 11px; color: #000000; opacity: 0.7;">' +
+          '<div style="font-size: 12px; margin-bottom: 8px; font-weight: 600;">字体设置信息</div>' +
+          '<div style="font-size: 11px; opacity: 0.7;">' +
             '标题: ' + (field.titleFontSize || 14) + 'px · ' +
             '正文: ' + (field.metaFontSize || 11) + 'px' +
           '</div>' +
@@ -1075,6 +1015,7 @@ class AddFieldModal extends Modal {
   private onSubmit: (field: FieldStyle) => void;
   private newFieldName: string = '';
   private copyFromIndex: number = -1; // -1 表示不复制（使用默认样式）
+  private selectedPalette?: PaperPalette;
 
   constructor(app: App, fields: FieldStyle[], onSubmit: (field: FieldStyle) => void) {
     super(app);
@@ -1099,6 +1040,7 @@ class AddFieldModal extends Modal {
         setTimeout(() => text.inputEl.focus(), 100);
       });
 
+    let refreshPalettes = () => {};
     // 样式来源下拉
     new Setting(contentEl)
       .setName('样式来源')
@@ -1110,8 +1052,18 @@ class AddFieldModal extends Modal {
         });
         dropdown.onChange(v => {
           this.copyFromIndex = parseInt(v);
+          this.selectedPalette = undefined;
+          refreshPalettes();
         });
       });
+
+    const paletteSection = contentEl.createEl('details', { cls: 'pm-palette-custom' });
+    paletteSection.createEl('summary', { text: '选择背景色（可选）' });
+    const palettePicker = renderPalettePicker(paletteSection, {
+      getCurrentColors: () => this.selectedPalette?.colors ?? this.fields[this.copyFromIndex] ?? {},
+      onSelect: palette => { this.selectedPalette = palette; },
+    });
+    refreshPalettes = () => palettePicker.refresh();
 
     // 按钮
     new Setting(contentEl)
@@ -1201,6 +1153,7 @@ class AddFieldModal extends Modal {
       };
     }
 
+    if (this.selectedPalette) applyPaperPalette(newField, this.selectedPalette);
     this.onSubmit(newField);
     this.close();
   }

@@ -2,12 +2,17 @@ import { Plugin } from 'obsidian';
 import { DEFAULT_SETTINGS, MyPluginSettings, PaperSettingTab } from './settings';
 import { PAPER_VIEW_TYPE, PaperView } from './ui/PaperView';
 import { SetupModal } from './ui/SetupModal';
+import { ClassificationOrganizerModal } from './ui/classification/ClassificationOrganizerModal';
+import { PaperReading } from './reading/service';
+import { normalizeReadingSettings } from './reading/config';
 
 export default class PaperPlugin extends Plugin {
   settings: MyPluginSettings;
+  paperReading: PaperReading;
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.paperReading = new PaperReading(this);
 
     this.registerView(PAPER_VIEW_TYPE, leaf => new PaperView(leaf, this));
 
@@ -17,6 +22,15 @@ export default class PaperPlugin extends Plugin {
       id: 'open-paper-manager',
       name: '打开论文管理界面',
       callback: () => this.openPaperView(),
+    });
+
+    this.addCommand({
+      id: 'organize-paper-classifications',
+      name: '整理论文领域与分类',
+      callback: () => new ClassificationOrganizerModal(this.app, this, async () => {
+        await Promise.allSettled(this.app.workspace.getLeavesOfType(PAPER_VIEW_TYPE)
+          .map(leaf => (leaf.view as PaperView).render()));
+      }).open(),
     });
 
     this.addSettingTab(new PaperSettingTab(this.app, this));
@@ -43,11 +57,11 @@ export default class PaperPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign(
-      {},
-      DEFAULT_SETTINGS,
-      (await this.loadData()) as Partial<MyPluginSettings>
-    );
+    const data = (await this.loadData()) as Partial<MyPluginSettings> & { paperMentor?: any } | null;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    this.settings.paperReading = normalizeReadingSettings(data?.paperReading ?? { executable: data?.paperMentor?.executable, proxyUrl: data?.paperMentor?.proxyUrl, model: data?.paperMentor?.model, effort: data?.paperMentor?.effort });
+
+    delete (this.settings as MyPluginSettings & { paperMentor?: unknown }).paperMentor;
 
     // 确保所有领域都有字体属性（数据迁移）
     this.settings.fields = this.settings.fields.map(field => ({

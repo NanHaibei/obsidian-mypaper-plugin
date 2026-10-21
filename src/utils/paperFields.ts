@@ -1,4 +1,4 @@
-import { MyPluginSettings } from '../settings';
+import type { MyPluginSettings } from '../settings';
 
 export interface PaperFieldSource {
   field?: unknown;
@@ -41,7 +41,7 @@ export function getPrimaryPaperField(
 }
 
 export function resolveMainFieldName(
-  settings: MyPluginSettings,
+  settings: Pick<MyPluginSettings, 'fields'>,
   fieldName: string
 ): string {
   for (const field of settings.fields) {
@@ -51,6 +51,17 @@ export function resolveMainFieldName(
   }
 
   return fieldName;
+}
+
+/** Choose the one main field shown on the paper, independently of method tags. */
+export function getMainPaperField(
+  settings: Pick<MyPluginSettings, 'fields'>,
+  source: PaperFieldSource | undefined,
+  fallbackField?: string
+): string {
+  const names = normalizePaperFields(source, fallbackField);
+  const explicit = names.find(name => settings.fields.some(field => field.name === name));
+  return explicit || resolveMainFieldName(settings, names[0] || '') || 'Unsorted';
 }
 
 export function paperMatchesField(

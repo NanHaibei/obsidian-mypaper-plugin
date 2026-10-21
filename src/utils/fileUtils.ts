@@ -2,6 +2,7 @@ import { App, TFile, TFolder, normalizePath } from 'obsidian';
 import { MyPluginSettings } from '../settings';
 import { PaperInfo } from '../types';
 import { translateText } from './translationUtils';
+import { getPaperUrl } from './paperLinks';
 
 export function getExcalidrawPath(settings: MyPluginSettings): string {
   return normalizePath(`${settings.workspaceFolder}/论文关系图.md`);
@@ -83,7 +84,8 @@ export async function createPaperFile(
   app: App,
   settings: MyPluginSettings,
   paper: PaperInfo,
-  category: string
+  category: string,
+  onCreated?: (file: TFile) => Promise<void>
 ): Promise<TFile | null> {
   const base = normalizePath(settings.workspaceFolder);
   const safeName = sanitizeFileName(paper.title);
@@ -112,7 +114,13 @@ export async function createPaperFile(
       }
     }
 
-    return await app.vault.create(filePath, buildPaperContent(paper, translatedAbstract));
+    const file = await app.vault.create(filePath, buildPaperContent(paper, translatedAbstract));
+    // 只对本次新建的笔记入队；重复添加已有论文不重复启动 Codex。
+    if (onCreated) {
+      try { await onCreated(file); }
+      catch (error) { console.error('[PaperPlugin] 精读任务入队失败:', error); }
+    }
+    return file;
   } catch (e) {
     console.error('[PaperPlugin] Failed to create paper file:', e);
     return null;
@@ -143,7 +151,10 @@ function buildPaperContent(paper: PaperInfo, translatedAbstract: string = ''): s
   }
   if (primaryField) lines.push(`field: "${escapeYaml(primaryField)}"`);
   if (paper.arxivId) lines.push(`arxivId: "${escapeYaml(paper.arxivId)}"`);
-  if (paper.doi) lines.push(`doi: "${paper.doi}"`);
+  if (paper.doi) lines.push(`doi: "${escapeYaml(paper.doi)}"`);
+  if (paper.source) lines.push(`source: "${escapeYaml(paper.source)}"`);
+  const paperUrl = getPaperUrl(paper);
+  if (paperUrl) lines.push(`url: "${escapeYaml(paperUrl)}"`);
   lines.push('---', '');
   lines.push(`# ${paper.title}`, '');
   lines.push(`**期刊/会议**：${paper.journal || ''}  `);
@@ -164,6 +175,13 @@ function buildPaperContent(paper: PaperInfo, translatedAbstract: string = ''): s
       arxivId = parts[parts.length - 1] || arxivId;
     }
     lines.push(`**arXiv**：[arXiv](https://arxiv.org/abs/${arxivId}), [PDF](https://arxiv.org/pdf/${arxivId}), [AlphaXiv](https://alphaxiv.org/abs/${arxivId}), [HTML](https://arxiv.org/html/${arxivId})  `);
+  }
+
+  if (paper.doi) {
+    lines.push(`**DOI**：[${paper.doi}](<https://doi.org/${encodeURIComponent(paper.doi)}>)  `);
+  }
+  if (paperUrl && (paper.source === 'ieee' || !paper.arxivId)) {
+    lines.push(`**原文**：[${paper.source === 'ieee' ? 'IEEE Xplore' : '查看原文'}](<${paperUrl}>)  `);
   }
 
   if (paper.abstract) {

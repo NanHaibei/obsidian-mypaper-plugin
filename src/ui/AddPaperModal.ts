@@ -1,12 +1,17 @@
-import { App, Modal, Notice, Setting, TFile } from 'obsidian';
+import { App, Modal, Notice, Platform, Setting, TFile } from 'obsidian';
 import MyPlugin from '../main';
 import { PaperInfo, FieldStyle } from '../types';
-import { searchArxiv } from '../api/arxivSearch';
-import { searchIEEE } from '../api/ieeeSearch';
+import { getPaperSearchSource, PaperSearchSource, searchPapers } from '../api/paperSearch';
 import { isRateLimitError } from '../api/requestGuards';
 import { createPaperFile } from '../utils/fileUtils';
 import { insertPaperToExcalidraw } from '../utils/excalidrawUtils';
 import { normalizePaperFields } from '../utils/paperFields';
+import { getPaperUrl } from '../utils/paperLinks';
+import { applyPaperPalette, PaperPalette } from '../utils/colorPalettes';
+import { renderPalettePicker } from './PalettePicker';
+import { renderReadingModelPicker } from './ReadingModelPicker';
+import { canonicalPaperId } from '../reading/jobs';
+import type { ReadingSettings } from '../reading/config';
 
 export class AddPaperModal extends Modal {
   private plugin: MyPlugin;
@@ -16,6 +21,9 @@ export class AddPaperModal extends Modal {
   private selectedFields: string[];
   private onComplete?: (file?: TFile) => void | Promise<void>;
   private isAdding = false;
+  private disposeModelPicker?: () => void;
+  private readingChoice: Pick<ReadingSettings, 'model' | 'effort'>;
+  private searchSource: PaperSearchSource;
   // 手动输入表单数据
   private manualInput: {
     title: string;
@@ -40,6 +48,8 @@ export class AddPaperModal extends Modal {
   constructor(app: App, plugin: MyPlugin, onComplete?: (file?: TFile) => void | Promise<void>) {
     super(app);
     this.plugin = plugin;
+    this.readingChoice = { model: plugin.settings.paperReading.model, effort: plugin.settings.paperReading.effort };
+    this.searchSource = plugin.settings.ieeeApiKey ? 'all' : 'arxiv';
     this.category = '待阅读';
     // 验证 defaultField 是否在 fields 列表中存在，不存在则使用第一个字段
     const validFields = plugin.settings.fields.map(f => f.name);
@@ -90,6 +100,7 @@ export class AddPaperModal extends Modal {
   // ── 搜索页面 ───────────────────────────────────────────────────────────
 
   private showSearchPage(): void {
+    this.disposeModelPicker?.();
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl('h2', { text: '添加论文' });
@@ -145,12 +156,28 @@ export class AddPaperModal extends Modal {
     let query = '';
     const resultsContainer = searchContainer.createDiv();
 
+    const sourceSetting = new Setting(searchContainer)
+      .setName('论文来源')
+      .setDesc('选择来源后点击搜索，仅发送输入的检索内容。文献链接或编号会自动切换来源。');
+    sourceSetting.addDropdown(drop => {
+      drop.addOption('arxiv', 'arXiv');
+      drop.addOption('ieee', 'IEEE');
+      drop.addOption('all', 'arXiv + IEEE');
+      drop.setValue(this.searchSource).onChange(value => {
+        this.searchSource = getPaperSearchSource(query, value as PaperSearchSource);
+        drop.setValue(this.searchSource);
+      });
+    });
+
     new Setting(searchContainer)
-      .setName('搜索关键词')
-      .setDesc('输入论文标题或关键词，支持 arXiv 和 IEEE')
+      .setName('搜索论文')
+      .setDesc('输入标题、关键词、arXiv ID，或 IEEE DOI、文献链接、ieee:编号。')
       .addText(text => {
-        text.setPlaceholder('输入搜索关键词...').onChange(v => {
+        text.setPlaceholder('标题、DOI 或文献链接...').onChange(v => {
           query = v;
+          this.searchSource = getPaperSearchSource(v, this.searchSource);
+          const select = sourceSetting.controlEl.querySelector('select');
+          if (select) select.value = this.searchSource;
         });
         text.inputEl.addEventListener('keydown', async e => {
           if (e.key === 'Enter') await this.doSearch(query, resultsContainer);
@@ -163,6 +190,12 @@ export class AddPaperModal extends Modal {
           .onClick(async () => await this.doSearch(query, resultsContainer))
       );
 
+    searchContainer.createEl('p', {
+      cls: 'setting-item-description',
+      text: this.plugin.settings.ieeeApiKey
+        ? 'IEEE 检索使用已配置的 IEEE Xplore API Key。导入元数据和原文链接，全文访问权限由 IEEE 决定。'
+        : 'IEEE 标题和 DOI 检索通过 Crossref 获取公开元数据，无需 API Key，部分摘要或作者单位可能缺失。IEEE 链接受页面访问限制时，请改用 DOI 或标题。',
+    });
     searchContainer.appendChild(resultsContainer);
 
     // 手动输入模式内容容器（初始隐藏）
@@ -315,30 +348,21 @@ export class AddPaperModal extends Modal {
     loadingEl.createSpan({ text: ' 搜索中...' });
 
     try {
-      const [arxivResult, ieeeResult] = await Promise.allSettled([
-        searchArxiv(query),
-        this.plugin.settings.ieeeApiKey
-          ? searchIEEE(query, this.plugin.settings.ieeeApiKey)
-          : Promise.resolve([]),
-      ]);
-      const arxiv = arxivResult.status === 'fulfilled' ? arxivResult.value : [];
-      const ieee = ieeeResult.status === 'fulfilled' ? ieeeResult.value : [];
-      this.results = [...arxiv, ...ieee];
-      this.renderResults(container);
-
-      const failures = [arxivResult, ieeeResult].filter(
-        result => result.status === 'rejected'
+      const { papers, failures } = await searchPapers(
+        query, this.searchSource, this.plugin.settings.ieeeApiKey
       );
-      if (failures.length > 0) {
-        const rateLimited = failures.some(
-          result => result.status === 'rejected' && isRateLimitError(result.reason)
-        );
-        if (this.results.length > 0 && !rateLimited) return;
-        new Notice(
-          rateLimited
-            ? '部分论文源请求过于频繁，已显示可用结果。请稍等几秒再搜索。'
-            : '部分论文源搜索失败，已显示可用结果。'
-        );
+      this.results = papers;
+      if (papers.length > 0 || failures.length === 0) this.renderResults(container);
+      else container.empty();
+
+      for (const failure of failures) {
+        const message = isRateLimitError(failure.error)
+          ? '请求过于频繁，请稍等后重试。'
+          : failure.error instanceof Error ? failure.error.message : '请求失败，请稍后重试。';
+        container.createEl('p', {
+          cls: 'pm-search-error',
+          text: `${failure.source} 搜索失败：${message}`,
+        });
       }
     } catch (e) {
       container.empty();
@@ -367,7 +391,7 @@ export class AddPaperModal extends Modal {
       item.createDiv({ cls: 'pm-result-title', text: paper.title });
       item.createDiv({
         cls: 'pm-result-meta',
-        text: `${paper.source?.toUpperCase() ?? ''} · ${paper.journal} · ${paper.date}`,
+        text: [paper.source === 'arxiv' ? 'arXiv' : paper.source === 'ieee' ? 'IEEE' : '', paper.journal, paper.date].filter(Boolean).join(' · '),
       });
       item.createDiv({
         cls: 'pm-result-authors',
@@ -385,6 +409,7 @@ export class AddPaperModal extends Modal {
   // ── 详情页面 ───────────────────────────────────────────────────────────
 
   private showDetailPage(): void {
+    this.disposeModelPicker?.();
     if (!this.selected) return;
     const p = this.selected;
     const { contentEl } = this;
@@ -410,6 +435,17 @@ export class AddPaperModal extends Modal {
     }
     if (p.arxivId) addField('arXiv ID', p.arxivId);
     if (p.doi) addField('DOI', p.doi);
+    const paperUrl = getPaperUrl(p);
+    if (paperUrl) {
+      const row = info.createDiv({ cls: 'pm-detail-row' });
+      row.createSpan({ cls: 'pm-detail-label', text: '原文链接' });
+      row.createEl('a', {
+        cls: 'pm-detail-value external-link',
+        text: p.source === 'ieee' ? '在 IEEE Xplore 查看' : '查看原文',
+        href: paperUrl,
+        attr: { target: '_blank', rel: 'noopener noreferrer' },
+      });
+    }
 
     // 论文类别
     const categories = ['待阅读', ...this.plugin.settings.labels];
@@ -496,6 +532,8 @@ export class AddPaperModal extends Modal {
 
     renderFieldSelectors();
 
+    this.disposeModelPicker = renderReadingModelPicker(contentEl, this.plugin, this.readingChoice);
+
     // 按钮
     const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
     buttonContainer.style.display = 'flex';
@@ -507,7 +545,7 @@ export class AddPaperModal extends Modal {
     backBtn.addEventListener('click', () => this.showSearchPage());
 
     const addBtn = buttonContainer.createEl('button', {
-      text: '确定添加',
+      text: Platform.isDesktopApp ? '添加并生成阅读笔记' : '添加论文',
       cls: 'mod-cta'
     });
     addBtn.addEventListener('click', () => this.doAdd(addBtn));
@@ -521,6 +559,7 @@ export class AddPaperModal extends Modal {
 
     let newFieldName = '';
     let copyFromIndex = -1; // -1 表示使用默认样式
+    let selectedPalette: PaperPalette | null = null;
 
     new Setting(modal.contentEl)
       .setName('名称')
@@ -544,8 +583,30 @@ export class AddPaperModal extends Modal {
         });
         dropdown.onChange(v => {
           copyFromIndex = parseInt(v);
+          selectedPalette = null;
+          palettePicker.refresh();
         });
       });
+
+    const paletteDetails = modal.contentEl.createEl('details', { cls: 'pm-palette-details' });
+    paletteDetails.createEl('summary', { text: '选择背景色（可选）' });
+    paletteDetails.createEl('p', {
+      cls: 'setting-item-description',
+      text: '点选背景色，其他样式沿用所选样式。',
+    });
+    const palettePicker = renderPalettePicker(paletteDetails.createDiv(), {
+      getCurrentColors: () => selectedPalette?.colors
+        ?? this.plugin.settings.fields[copyFromIndex]
+        ?? {
+          backgroundColor: '#ffffff',
+          patternColor: '#cccccc',
+          textColor: '#000000',
+          borderColor: '#000000',
+        },
+      onSelect: palette => {
+        selectedPalette = palette;
+      },
+    });
 
     new Setting(modal.contentEl)
       .addButton(btn => {
@@ -622,6 +683,7 @@ export class AddPaperModal extends Modal {
             };
           }
 
+          if (selectedPalette) applyPaperPalette(newField, selectedPalette);
           this.plugin.settings.fields.push(newField);
           this.plugin.saveSettings();
           if (!this.selectedFields.includes(fieldName)) {
@@ -641,6 +703,7 @@ export class AddPaperModal extends Modal {
     if (!this.selected || this.isAdding) return;
 
     const paperFields = this.getFieldSelections();
+    if (!paperFields.length) { new Notice('请先确认至少一个研究领域'); return; }
     this.selected.fields = paperFields;
     this.selected.field = paperFields[0];
     this.isAdding = true;
@@ -651,16 +714,39 @@ export class AddPaperModal extends Modal {
     }
 
     try {
+      const duplicate = this.app.vault.getMarkdownFiles().find(file => {
+        if (!file.path.startsWith(this.plugin.settings.workspaceFolder + '/')) return false;
+        if (file.path.includes('/分类备份/')) return false;
+        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        if (!fm) return false;
+        return canonicalPaperId({ title: String(fm.title || file.basename), authors: [],
+          arxivId: typeof fm.arxivId === 'string' ? fm.arxivId : undefined,
+          doi: typeof fm.doi === 'string' ? fm.doi : undefined,
+          url: typeof fm.url === 'string' ? fm.url : undefined }) === canonicalPaperId(this.selected!);
+      });
+      if (duplicate) { new Notice('这篇论文已在管理目录中，可从论文菜单生成或重试阅读笔记'); return; }
+      if (Platform.isDesktopApp && !getPaperUrl(this.selected) && !this.selected.arxivId) throw new Error('请补充 DOI、arXiv ID 或原文网址');
+      Object.assign(this.plugin.settings.paperReading, this.readingChoice);
+      await this.plugin.saveSettings();
+      let queueError = '';
+      let created = false;
       const file = await createPaperFile(
         this.app,
         this.plugin.settings,
         this.selected,
-        this.category
+        this.category,
+        async file => {
+          created = true;
+          if (!Platform.isDesktopApp) return;
+          try { await this.plugin.paperReading.enqueue(file, this.selected!, { ...this.readingChoice }); }
+          catch (error) { queueError = error instanceof Error ? error.message : String(error); }
+        }
       );
       if (!file) {
         new Notice('创建论文文件失败');
         return;
       }
+      if (!created) throw new Error('已有同名文件，未覆盖；请检查论文标题或已有记录');
       // 只有设置启用时才添加卡片
       if (this.plugin.settings.addCardToExcalidraw) {
         await insertPaperToExcalidraw(
@@ -673,6 +759,7 @@ export class AddPaperModal extends Modal {
       await waitForPaperMetadata(this.app, file, paperFields);
       await this.onComplete?.(file);
       this.showAddSuccess();
+      if (queueError) new Notice(`论文已添加，但阅读任务未启动：${queueError}`, 10000);
       new Notice(`已将「${this.selected.title}」添加到「${this.category}」`);
       await sleep(520);
       this.close();
@@ -681,10 +768,14 @@ export class AddPaperModal extends Modal {
       if (addBtn) {
         addBtn.disabled = false;
         addBtn.removeClass('pm-add-button-loading');
-        addBtn.textContent = '确定添加';
+        addBtn.textContent = Platform.isDesktopApp ? '添加并生成阅读笔记' : '添加论文';
       }
     } finally {
       this.isAdding = false;
+      if (addBtn?.isConnected) {
+        addBtn.disabled = false; addBtn.removeClass('pm-add-button-loading');
+        addBtn.textContent = Platform.isDesktopApp ? '添加并生成阅读笔记' : '添加论文';
+      }
     }
   }
 
@@ -693,7 +784,7 @@ export class AddPaperModal extends Modal {
     const success = this.contentEl.createDiv({ cls: 'pm-add-success' });
     success.createDiv({ cls: 'pm-add-success-icon', text: '✓' });
     success.createEl('h2', { text: '已添加' });
-    success.createDiv({ cls: 'pm-add-success-text', text: '论文列表已更新' });
+    success.createDiv({ cls: 'pm-add-success-text', text: Platform.isDesktopApp ? '论文列表已更新，阅读进度将在列表中显示' : '论文列表已更新' });
   }
 
   // ── 手动输入详情页面 ───────────────────────────────────────────────────────
@@ -723,6 +814,7 @@ export class AddPaperModal extends Modal {
   }
 
   onClose(): void {
+    this.disposeModelPicker?.();
     this.contentEl.empty();
   }
 }

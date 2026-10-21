@@ -1,3 +1,4 @@
+import { readingStatusText } from '../reading/status';
 import { App, ItemView, MarkdownRenderer, Menu, Modal, Notice, Setting, TFile, WorkspaceLeaf } from 'obsidian';
 import MyPlugin from '../main';
 import { getPapersByCategory, movePaper, resolveExcalidrawPath } from '../utils/fileUtils';
@@ -5,8 +6,13 @@ import { insertPaperToExcalidraw } from '../utils/excalidrawUtils';
 import { getFieldStyle } from '../utils/excalidrawUtils';
 import { PaperInfo, IdeaItem } from '../types';
 import { AddPaperModal } from './AddPaperModal';
+import { renderPaletteSwatches } from './PalettePicker';
+import { FieldHoverPreview } from './FieldHoverPreview';
 import { SetupModal } from './SetupModal';
-import { getPrimaryPaperField, normalizePaperFields, paperMatchesField, resolveMainFieldName } from '../utils/paperFields';
+import { ClassificationOrganizerModal } from './classification/ClassificationOrganizerModal';
+import { applyClassificationPlan, scanClassificationPapers } from '../classification/storage';
+import { getMainPaperField, getPrimaryPaperField, normalizePaperFields, resolveMainFieldName } from '../utils/paperFields';
+import { getPrimaryFieldGroups } from '../utils/paperFieldStats';
 
 export const PAPER_VIEW_TYPE = 'paper-plugin-view';
 
@@ -105,10 +111,7 @@ class FieldPapersModal extends Modal {
         }
         if (aliasCount > 0) {
           aliasTag.addEventListener('click', () => {
-            const exactMatchedPapers = Object.values(
-              getPapersByCategory(this.app, this.plugin.settings)
-            )
-              .flat()
+            const exactMatchedPapers = this.papers
               .filter(file => {
                 const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
                 return normalizePaperFields(fm, this.plugin.settings.defaultField).includes(alias);
@@ -203,9 +206,21 @@ export class PaperView extends ItemView {
   private calendarDisplayMonth: number | null = null;
   // 每个分类的排序状态
   private categorySortOptions: Map<string, SortOption> = new Map();
+  private activeSearchCategory: string | null = null;
+  private categorySearchQueries: Map<string, string> = new Map();
+  private categorySearchRenders: Map<string, () => void> = new Map();
+  private categorySearchWraps: Map<string, HTMLElement> = new Map();
+  private categorySearchInputs: Map<string, HTMLInputElement> = new Map();
+  private fieldHoverPreview: FieldHoverPreview;
 
   private getPaperFields(frontmatter: Record<string, unknown> | undefined): string[] {
     return normalizePaperFields(frontmatter, this.plugin.settings.defaultField);
+  }
+
+  private getDisplayFieldNames(fieldNames: string[]): string[] {
+    if (!fieldNames.length) return [];
+    const main = getMainPaperField(this.plugin.settings, { fields: fieldNames });
+    return [main, ...fieldNames.filter(name => name !== main)];
   }
 
   private createFieldTags(
@@ -218,6 +233,7 @@ export class PaperView extends ItemView {
       return;
     }
 
+    fieldNames = this.getDisplayFieldNames(fieldNames);
     const tagRow = container.createDiv({ cls: 'pm-field-tag-row' });
     const primaryFieldName = fieldNames[0]!;
     const primaryFieldStyle = getFieldStyle(this.plugin.settings, primaryFieldName);
@@ -231,6 +247,11 @@ export class PaperView extends ItemView {
       primaryTag.style.backgroundColor = primaryFieldStyle.backgroundColor;
       primaryTag.style.color = this.getContrastColor(primaryFieldStyle.backgroundColor);
     }
+    this.fieldHoverPreview.add(primaryTag, fieldNames.map(name => {
+      const style = getFieldStyle(this.plugin.settings, name);
+      return { name, background: style?.backgroundColor,
+        color: style ? this.getContrastColor(style.backgroundColor) : undefined };
+    }));
 
     if (fieldNames.length > 1) {
       const extraTags = tagRow.createDiv({ cls: 'pm-field-tag-squares' });
@@ -300,6 +321,8 @@ export class PaperView extends ItemView {
   constructor(leaf: WorkspaceLeaf, plugin: MyPlugin) {
     super(leaf);
     this.plugin = plugin;
+    this.fieldHoverPreview = this.addChild(new FieldHoverPreview(this.containerEl.ownerDocument));
+    this.register(this.plugin.paperReading.subscribe(() => this.updateReadingStatuses()));
   }
 
   getViewType(): string {
@@ -335,6 +358,7 @@ export class PaperView extends ItemView {
   }
 
   async render(): Promise<void> {
+    this.fieldHoverPreview.close();
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
     root.addClass('pm-view');
@@ -373,6 +397,9 @@ export class PaperView extends ItemView {
 
   private async renderPaperList(root: HTMLElement): Promise<void> {
     const byCategory = getPapersByCategory(this.app, this.plugin.settings);
+    this.categorySearchRenders.clear();
+    this.categorySearchWraps.clear();
+    this.categorySearchInputs.clear();
 
     // 计算最长领域名称的实际像素宽度，用于统一标签宽度
     let maxFieldWidth = 0;
@@ -420,6 +447,119 @@ export class PaperView extends ItemView {
       // 右侧容器：排序按钮 + 数量
       const headerRight = header.createDiv({ cls: 'pm-section-header-right' });
 
+      const searchWrap = headerRight.createDiv({ cls: 'pm-section-search-wrap' });
+      const searchBtn = searchWrap.createEl('button', {
+        cls: 'pm-search-btn',
+        text: '🔍',
+        attr: { title: '搜索论文' }
+      });
+
+      const searchInput = searchWrap.createEl('input', {
+        cls: 'pm-search-input',
+        type: 'search',
+        attr: { placeholder: '查找论文标题、作者、期刊或领域' }
+      });
+
+      const currentQuery = this.categorySearchQueries.get(label) || '';
+      const isSearchActive = this.activeSearchCategory === label;
+      searchInput.value = currentQuery;
+      if (isSearchActive) {
+        searchWrap.addClass('is-active');
+      }
+      this.categorySearchWraps.set(label, searchWrap);
+      this.categorySearchInputs.set(label, searchInput);
+
+      const searchPanel = section.createDiv({ cls: 'pm-search-panel' });
+
+      const renderSearchPanel = () => {
+        const query = (searchInput.value || '').trim();
+        this.categorySearchQueries.set(label, query);
+        searchPanel.empty();
+
+        if (this.activeSearchCategory !== label) {
+          searchPanel.removeClass('is-open');
+          return;
+        }
+
+        searchPanel.addClass('is-open');
+        searchPanel.createDiv({
+          cls: 'pm-search-panel-hint',
+          text: query.length > 0 ? `查找“${query}”的匹配论文` : '输入关键词后，下方会显示匹配结果'
+        });
+
+        if (query.length === 0) {
+          searchPanel.createDiv({
+            cls: 'pm-search-panel-empty',
+            text: '可搜索标题、作者、期刊和领域'
+          });
+          return;
+        }
+
+        const matchedFiles = this.filterPapersByQuery(typedFiles, query).slice(0, 8);
+        if (matchedFiles.length === 0) {
+          searchPanel.createDiv({
+            cls: 'pm-search-panel-empty',
+            text: '没有找到匹配的论文'
+          });
+          return;
+        }
+
+        const results = searchPanel.createDiv({ cls: 'pm-search-panel-results' });
+        for (const file of matchedFiles) {
+          const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+          const resultItem = results.createDiv({ cls: 'pm-search-panel-item' });
+          const title = file.basename.replace(/^【.+?】-/, '');
+          resultItem.createDiv({ cls: 'pm-search-panel-title', text: title });
+
+          const metaParts = [
+            ...this.getPaperFields(fm),
+            typeof fm?.journal === 'string' ? fm.journal : '',
+            this.getSearchAuthors(fm)
+          ].filter(Boolean);
+
+          if (metaParts.length > 0) {
+            resultItem.createDiv({
+              cls: 'pm-search-panel-meta',
+              text: metaParts.join(' · ')
+            });
+          }
+
+          resultItem.addEventListener('click', async () => {
+            const leaf = this.app.workspace.getLeaf(false);
+            await leaf.openFile(file);
+          });
+        }
+      };
+      this.categorySearchRenders.set(label, renderSearchPanel);
+
+      searchBtn.addEventListener('click', () => {
+        this.activeSearchCategory = this.activeSearchCategory === label ? null : label;
+        this.syncSearchUi(this.activeSearchCategory === label ? label : undefined);
+      });
+
+      searchInput.addEventListener('click', (e) => e.stopPropagation());
+      searchInput.addEventListener('keydown', async (e) => {
+        if (e.key === 'Escape') {
+          this.activeSearchCategory = null;
+          this.syncSearchUi();
+          return;
+        }
+
+        if (e.key === 'Enter') {
+          const firstMatch = this.filterPapersByQuery(typedFiles, searchInput.value.trim())[0];
+          if (!firstMatch) {
+            return;
+          }
+          const leaf = this.app.workspace.getLeaf(false);
+          await leaf.openFile(firstMatch);
+        }
+      });
+      searchInput.addEventListener('focus', () => {
+        this.activeSearchCategory = label;
+        this.syncSearchUi();
+      });
+      searchInput.addEventListener('input', () => renderSearchPanel());
+
       // 排序按钮
       const currentSort = this.categorySortOptions.get(label) || 'date';
       const sortBtn = headerRight.createEl('button', {
@@ -435,6 +575,7 @@ export class PaperView extends ItemView {
       headerRight.createSpan({ cls: 'pm-section-count', text: String(files.length) });
 
       if (files.length === 0) {
+        renderSearchPanel();
         section.createDiv({ cls: 'pm-empty', text: '暂无论文' });
         continue;
       }
@@ -447,7 +588,60 @@ export class PaperView extends ItemView {
       for (const file of sortedFiles) {
         await this.renderPaperItem(list, file as TFile, label, maxFieldWidth, tagColumnWidth);
       }
+
+      renderSearchPanel();
     }
+  }
+
+  private syncSearchUi(focusCategory?: string): void {
+    for (const [category, wrap] of this.categorySearchWraps.entries()) {
+      if (this.activeSearchCategory === category) {
+        wrap.addClass('is-active');
+      } else {
+        wrap.removeClass('is-active');
+      }
+    }
+
+    for (const renderSearchPanel of this.categorySearchRenders.values()) {
+      renderSearchPanel();
+    }
+
+    if (!focusCategory) {
+      return;
+    }
+
+    const input = this.categorySearchInputs.get(focusCategory);
+    if (input) {
+      window.setTimeout(() => input.focus(), 0);
+    }
+  }
+
+  private filterPapersByQuery(files: TFile[], query: string): TFile[] {
+    const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
+    if (!normalizedQuery) {
+      return [];
+    }
+
+    return files.filter((file) => {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const haystacks = [
+        file.basename.replace(/^【.+?】-/, ''),
+        typeof fm?.title === 'string' ? fm.title : '',
+        typeof fm?.journal === 'string' ? fm.journal : '',
+        this.getSearchAuthors(fm),
+        ...this.getPaperFields(fm)
+      ];
+
+      return haystacks.some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedQuery));
+    });
+  }
+
+  private getSearchAuthors(frontmatter: Record<string, unknown> | undefined): string {
+    const authors = frontmatter?.authors;
+    if (Array.isArray(authors)) {
+      return authors.join(', ');
+    }
+    return typeof authors === 'string' ? authors : '';
   }
 
   // 排序文件
@@ -515,6 +709,17 @@ export class PaperView extends ItemView {
     menu.showAtMouseEvent(e);
   }
 
+  private readingStatusElements = new Map<string, HTMLElement>();
+
+  private updateReadingStatuses(): void {
+    for (const [path, element] of this.readingStatusElements) {
+      const job = this.plugin.paperReading.statusFor(path);
+      element.setText(job ? readingStatusText(job) : '');
+      element.title = job?.error || '';
+      element.toggleClass('pm-reading-failed', job?.status === 'failed');
+    }
+  }
+
   private async renderPaperItem(
     list: HTMLElement,
     file: TFile,
@@ -536,6 +741,7 @@ export class PaperView extends ItemView {
       item.style.borderLeft = `3px solid ${activeField.backgroundColor}`;
     }
 
+    if (this.readingStatusElements.size > 2000) this.readingStatusElements.clear();
     // Display title (remove prefix like "【粗读】-")
     const displayName = file.basename.replace(/^【.+?】-/, '');
 
@@ -555,6 +761,11 @@ export class PaperView extends ItemView {
     // 使用 MarkdownRenderer 渲染标题（支持公式）
     const titleSpan = titleContainer.createSpan({ cls: 'pm-paper-title' });
     await MarkdownRenderer.render(this.app, displayName, titleSpan, file.path, this);
+
+    const readingStatus = titleContainer.createDiv({ cls: 'pm-reading-status' });
+    this.readingStatusElements.set(file.path, readingStatus);
+    const job = this.plugin.paperReading.statusFor(file.path);
+    if (job) { readingStatus.setText(readingStatusText(job)); readingStatus.title = job.error || ''; readingStatus.toggleClass('pm-reading-failed', job.status === 'failed'); }
 
     const fieldTagContainer = contentContainer.createDiv({ cls: 'pm-paper-field-tags' });
     if (typeof tagColumnWidth === 'number') {
@@ -627,6 +838,20 @@ export class PaperView extends ItemView {
     );
 
     menu.addSeparator();
+
+    menu.addItem(mi =>
+      mi.setTitle('生成或重试阅读笔记').setIcon('sparkles').onClick(async () => {
+        await this.plugin.paperReading.generateForFile(file);
+      })
+    );
+
+    menu.addSeparator();
+
+    const readingJob = this.plugin.paperReading.statusFor(file.path);
+    if (readingJob?.error) menu.addItem(mi => mi.setTitle('查看阅读任务未完成原因').onClick(() => { new Notice(readingJob.error!, 15000); }));
+    if (readingJob && ['queued', 'running'].includes(readingJob.status)) {
+      menu.addItem(mi => mi.setTitle('取消本篇阅读任务').onClick(() => this.plugin.paperReading.cancel(file.path)));
+    }
 
     // Add to Excalidraw
     menu.addItem(mi =>
@@ -748,43 +973,19 @@ export class PaperView extends ItemView {
       text: '🔄 Update'
     });
     refreshBtn.addEventListener('click', () => this.render());
+
+    const organizeBtn = section.createEl('button', {
+      cls: 'pm-organize-classifications-button', text: '🏷️ 整理分类',
+    });
+    organizeBtn.addEventListener('click', () =>
+      new ClassificationOrganizerModal(this.app, this.plugin, () => this.render()).open()
+    );
   }
 
   private renderFieldStats(container: HTMLElement): void {
-    const byCategory = getPapersByCategory(this.app, this.plugin.settings);
-
     const section = container.createDiv({ cls: 'pm-dashboard-section' });
-
-    // 统计各领域论文数量（支持别名匹配）
-    const fieldStats: Array<{ name: string; count: number; color: string }> = [];
-    let totalPapers = 0;
-
-    for (const field of this.plugin.settings.fields) {
-      let count = 0;
-      for (const [category, files] of Object.entries(byCategory)) {
-        for (const file of files) {
-          const fm = this.app.metadataCache.getFileCache(file as TFile)?.frontmatter;
-          if (
-            paperMatchesField(
-              this.plugin.settings,
-              fm,
-              field.name,
-              this.plugin.settings.defaultField
-            )
-          ) {
-            count++;
-          }
-        }
-      }
-      if (count > 0) {
-        fieldStats.push({
-          name: field.name,
-          count: count,
-          color: field.backgroundColor
-        });
-        totalPapers += count;
-      }
-    }
+    const fieldStats = this.getPrimaryFieldStats();
+    const totalPapers = fieldStats.reduce((sum, field) => sum + field.count, 0);
 
     if (totalPapers === 0) {
       section.createEl('h4', { text: '统计' });
@@ -855,7 +1056,7 @@ export class PaperView extends ItemView {
     totalLabel.setAttribute('y', String(center + 28));
     totalLabel.setAttribute('text-anchor', 'middle');
     totalLabel.classList.add('pm-donut-label');
-    totalLabel.textContent = '总计';
+    totalLabel.textContent = '论文总数';
     textGroup.appendChild(totalLabel);
 
     // 图例
@@ -1020,7 +1221,7 @@ export class PaperView extends ItemView {
   // 修改领域模态框
   private showFieldChangeModal(file: TFile, displayName: string): void {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-    const currentFields = this.getPaperFields(fm);
+    const currentFields = normalizePaperFields(fm);
 
     const modal = new Modal(this.app);
     modal.contentEl.createEl('h2', { text: '修改论文领域' });
@@ -1042,7 +1243,7 @@ export class PaperView extends ItemView {
       }
     }
 
-    let nextFields = [...currentFields];
+    let nextFields = this.getDisplayFieldNames(this.getPaperFields(fm));
     const fieldSection = modal.contentEl.createDiv({ cls: 'pm-multi-field-section' });
     const fieldHeader = fieldSection.createDiv({ cls: 'pm-multi-field-header' });
     fieldHeader.createDiv({ text: '研究领域', cls: 'pm-multi-field-title' });
@@ -1067,7 +1268,8 @@ export class PaperView extends ItemView {
 
         const controls = row.createDiv({ cls: 'pm-multi-field-row-controls' });
         const select = controls.createEl('select');
-        fieldOptions.forEach(opt => select.createEl('option', { value: opt.value, text: opt.label }));
+        fieldOptions.filter(opt => index > 0 || !opt.value || this.plugin.settings.fields.some(field => field.name === opt.value))
+          .forEach(opt => select.createEl('option', { value: opt.value, text: opt.label }));
         select.value = selectedField;
         select.addEventListener('change', () => {
           if (select.value && nextFields.some((value, currentIndex) => currentIndex !== index && value === select.value)) {
@@ -1114,67 +1316,59 @@ export class PaperView extends ItemView {
     cancelBtn.addEventListener('click', () => modal.close());
 
     const confirmBtn = buttonContainer.createEl('button', {
-      text: '确认修改',
+      text: '备份并修改',
       cls: 'mod-cta'
     });
 
     confirmBtn.addEventListener('click', async () => {
-      const normalizedNextFields = normalizePaperFields({ fields: nextFields });
+      const normalizedNextFields = this.getDisplayFieldNames(normalizePaperFields({ fields: nextFields }, this.plugin.settings.defaultField));
       if (normalizedNextFields.join('|') === currentFields.join('|')) {
         modal.close();
         return;
       }
 
-      // 先关闭模态框
-      modal.close();
-
+      confirmBtn.disabled = true;
       try {
-        await this.app.fileManager.processFrontMatter(file, fm => {
-          const primaryField = normalizedNextFields[0] || this.plugin.settings.defaultField;
-          fm.field = primaryField;
-          if (normalizedNextFields.length > 0) {
-            fm.fields = normalizedNextFields;
-          } else {
-            delete fm.fields;
-          }
+        const papers = await scanClassificationPapers(this.plugin);
+        const paper = papers.find(item => item.path === file.path);
+        if (!paper) throw new Error('找不到论文，请刷新后重试。');
+        if (JSON.stringify(paper.fields) !== JSON.stringify(currentFields)) {
+          throw new Error('论文分类已发生变化，请关闭窗口后重新修改。');
+        }
+        const result = await applyClassificationPlan(this.plugin, papers, {
+          taxonomy: this.plugin.settings.fields,
+          defaultField: this.plugin.settings.defaultField,
+          changes: [{
+            path: file.path,
+            beforeFields: paper.fields,
+            afterFields: normalizedNextFields.length ? normalizedNextFields : [this.plugin.settings.defaultField],
+          }],
         });
-
-        // 等待一小段时间确保 frontmatter 更新完成
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        // 刷新界面
+        if (result.failed.length || result.skipped.length || !result.updated.includes(file.path)) {
+          const details = [...result.failed, ...result.skipped].map(item => item.reason).join('；') || '分类未更新';
+          throw new Error(`${details}。备份：${result.backupPath}`);
+        }
+        modal.close();
         await this.render();
-
         new Notice(`已更新「${displayName}」的领域标签`);
       } catch (err) {
         new Notice('修改失败：' + (err as Error).message);
+      } finally {
+        confirmBtn.disabled = false;
       }
     });
 
     modal.open();
   }
 
-  // 显示领域论文列表
+  private getPrimaryFieldStats() {
+    return getPrimaryFieldGroups(this.plugin.settings, this.getAllPapers(),
+      file => this.app.metadataCache.getFileCache(file)?.frontmatter);
+  }
+
+  // The legend and its drill-down use the same exclusive main-field grouping.
   private showFieldPapers(fieldName: string): void {
-    const byCategory = getPapersByCategory(this.app, this.plugin.settings);
-    
-    // 收集该领域的所有论文（包括别名匹配）
-    const papers: TFile[] = [];
-    for (const [category, files] of Object.entries(byCategory)) {
-      for (const file of files) {
-        const fm = this.app.metadataCache.getFileCache(file as TFile)?.frontmatter;
-        if (
-          paperMatchesField(
-            this.plugin.settings,
-            fm,
-            fieldName,
-            this.plugin.settings.defaultField
-          )
-        ) {
-          papers.push(file as TFile);
-        }
-      }
-    }
+    const papers = this.getPrimaryFieldStats().find(field => field.name === fieldName)?.papers || [];
     
     // 按修改时间排序
     papers.sort((a, b) => b.stat.mtime - a.stat.mtime);
@@ -1327,10 +1521,20 @@ export class PaperView extends ItemView {
     const colorSetting = new Setting(modal.contentEl);
     colorSetting.settingEl.classList.add('pm-idea-color-setting');
     colorSetting.settingEl.style.display = 'none';
-    colorSetting.setName('标签颜色').setDesc('选择自定义标签的颜色');
+    colorSetting.setName('标签颜色').setDesc('点击色卡选择，也可自由取色');
+    let updateColorInput = (_color: string) => {};
+    const swatches = renderPaletteSwatches(colorSetting.controlEl, {
+      getCurrentColor: () => customColor,
+      onSelect: color => {
+        customColor = color;
+        updateColorInput(color);
+      },
+    });
     colorSetting.addColorPicker(col => {
-      col.onChange(v => {
+      updateColorInput = color => col.setValue(color);
+      col.setValue(customColor).onChange(v => {
         customColor = v;
+        swatches.refresh();
       });
     });
 

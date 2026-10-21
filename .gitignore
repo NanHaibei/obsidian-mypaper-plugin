@@ -1,5 +1,5 @@
 # vscode
-.vscode 
+.vscode
 
 # Intellij
 *.iml
@@ -17,6 +17,19 @@ main.js
 
 # obsidian
 data.json
+ai-mentor-jobs.json
+ai-mentor-jobs.json.tmp
+ai-mentor-runtime/
 
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
+
+# Paper-reading Skill runtime (contains private task material)
+paper-reading-jobs.json
+paper-reading-jobs.json.tmp
+paper-reading-runtime/
+
+# Public release output
+dist/
+__pycache__/
+*.pyc

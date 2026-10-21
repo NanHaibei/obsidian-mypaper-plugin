@@ -1,0 +1,32 @@
+name: Release plugin
+on:
+  push:
+    tags: ['[0-9]*.[0-9]*.[0-9]*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify tag matches manifest
+        run: node -e 'if (process.env.GITHUB_REF_NAME !== JSON.parse(require("fs").readFileSync("manifest.json")).version) process.exit(1)'
+      - run: npm ci
+      - run: npm test
+      - run: npm run package
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/main.js dist/manifest.json dist/styles.css \
+            dist/obsidian-mypaper-plugin-*.zip dist/SHA256SUMS.txt \
+            --verify-tag --title "My Paper Manager $GITHUB_REF_NAME" \
+            --notes-file docs/release-notes.md

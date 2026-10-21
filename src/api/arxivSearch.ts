@@ -44,6 +44,10 @@ function isArxivId(input: string): { isId: boolean; id: string } {
   return { isId: false, id: '' };
 }
 
+export function isArxivQuery(query: string): boolean {
+  return isArxivId(query).isId;
+}
+
 export async function searchArxiv(query: string): Promise<PaperInfo[]> {
   const normalizedQuery = query.trim();
   if (!normalizedQuery) return [];
