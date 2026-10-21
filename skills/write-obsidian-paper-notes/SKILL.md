@@ -53,13 +53,15 @@ description: Read an academic paper and prepare complete evidence-backed teachin
 - 论文实验表格以原表截图收录，不转录或重建成 Markdown 表格。AI 自行整理的简单对比表仍可使用 Markdown，并按标记规则在下一段独立写 `✦`。
 - 完整提取原 caption，在 `captionSource` 保留原文，在 `captionChinese` 完整翻译并保留 Figure/Table 编号。逐句核对主体、动作、条件、数值、单位、比较对象、限定词和结论方向；额外读图分析放正文。
 - `captionSource` 是供机器核对的 PDF 文字层证据，应从对应页 `source-text.json` 复制完整图注文字，不纠正原文拼写，不手工重录公式字形。PDF 图注有时嵌入星形、圆点等小图片，文字层会留空；必须查看原页，在 `captionChinese` 忠实保留这些图形符号或其含义，但不要把文字层不存在的符号补入 `captionSource`。正文和中文图注不能因文字层缺字而丢失含义。断行连字符可以按实际词形合并。
+- 原文未编号的图表同样必须保留，以 `Figure (unnumbered, page 23)`、`Table (unnumbered, page 10)` 等作为内部定位 ID；同页多项加 `, item 1`、`, item 2`。这些页码与条目位置不是论文编号，中文说明必须明确“未编号”和“第 N 页”，不得伪造原文编号。
+- 原文确实没有独立图注/表注时，查看原页确认，设置 `captionStatus:"absent"`、`captionSource:""`；`sourceExcerpt` 复制对应页至少 12 个非空白字符的原文定位片段（可取附近小节标题、任务说明或表头，不能冒充图注）。`captionChinese` 写成“第 N 页未编号图/表（原文无独立图注/表注；以下为 AI 说明）：……”并忠实说明页面内容。存在原图注时设置 `captionStatus:"present"`，完整保留并翻译原图注，`sourceExcerpt` 可为空。不得因没有图注而删掉原图表，也不得用无图注声明绕过已存在的原图注。
 - 在正文需要插图的位置写 `{{asset:图或表ID}}`，例如 `{{asset:Figure 1}}`；插件替换为本地嵌入及中文图注。每个 ID 对应 assets 中唯一条目；同一幅图包含多个区域时分别裁切并用明确的子图 ID。不要输出远程图片、本地绝对路径或猜测附件路径。
 - 行内公式使用 `$...$`，块级公式使用独立的 `$$` 行。不得以普通文字或代码显示 LaTeX。上下标操作数全部加花括号，例如 `x_{t}`、`q^{*}`、`a_{t-1}^{(k)}`。不向纯公式内部添加 `✦`。
 
 ## 输出与完成核查
 
 - 最终只返回宿主指定 JSON：`complete`、`markdown`、`assets`、`sourceInventory`、`missing`。正文直接从“1. 问题背景”开始，不添加论文大标题、AI 论文精读导师标题或交互式开场。
-- assets 每项包含 `id`、相对路径 `path`、`captionSource`、`captionChinese` 和 PDF `page`。captionChinese 本身不加 ✦，由插件在图注末尾统一添加。
+- assets 每项包含 `id`、相对路径 `path`、`captionSource`、`captionChinese`、PDF `page`、`captionStatus`（`present` 或 `absent`）和 `sourceExcerpt`。captionChinese 本身不加 ✦，由插件在图注末尾统一添加。
 - 图表 ID 支持 `Figure 9(a)`、`Table II`、`Algorithm 1` 等原文编号。原文算法也可使用保留完整算法本体的原始截图；分图的总 caption 和面板说明应分别核对，按逻辑合并，不把 PDF 提取顺序误当阅读顺序。
 - 原始 `captionSource` 按原文保留事实、数值与限定条件；不得将正文概括冒充图注。公式在 JSON 编码时只做一次必要转义，解析后的 MathJax 命令使用单个反斜杠。
 - 如本次提示要求自动核对，读取 `recovery-input.json` 的现有结果和全部问题；只修复必要部分并复用有效图片，不从零重写。不能证实的内容明确列入 missing，不为通过校验而改造事实。

@@ -1,6 +1,7 @@
-import { captionMatchesSource, normalizedFigureId } from './captionEvidence';
+import { normalizedFigureId } from './captionEvidence';
 import type { ReadingResult } from './result';
 import type { PaperSource } from './context';
+import { assetProvenanceIssues, unnumberedLocator } from './assetProvenance';
 
 export function noteHash(content: string): string {
   return require('crypto').createHash('sha256').update(content).digest('hex') as string;
@@ -13,7 +14,7 @@ export class ReadingValidationError extends Error {
 
 export function collectReadingIssues(result: ReadingResult, source: PaperSource): string[] {
   const issues: string[] = [];
-  if (!result.complete || result.missing.length) issues.push('论文必需部分未完成');
+  if (!result.complete || result.missing.length) issues.push(`论文必需部分未完成${result.missing.length ? '：' + result.missing.join('；') : ''}`);
   const text = result.markdown.trim();
   if (!text || /AI\s*论文精读导师|<!--[\s\S]*?-->|cite/.test(text)) issues.push('结果含旧导师标题或内部标记');
   const chapters = ['问题背景', '现有工作的问题与论文动机', '论文方法', '实验结果', '方法缺陷与未来工作'];
@@ -29,13 +30,11 @@ export function collectReadingIssues(result: ReadingResult, source: PaperSource)
   const assets = new Map(result.assets.map(a => [a.id, a]));
   if (assets.size !== result.assets.length) issues.push('图表 ID 重复');
   for (const asset of result.assets) {
-    if (!/^(Figure|Table|Algorithm)\s+(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*[a-z]?|[IVXLCDM]+)(?:\([a-z]\))?$/i.test(asset.id) ||
+    if ((!/^(Figure|Table|Algorithm)\s+(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*[a-z]?|[IVXLCDM]+)(?:\([a-z]\))?$/i.test(asset.id) && !unnumberedLocator(asset.id)) ||
       !/^figures\/[A-Za-z0-9_.-]+\.png$/.test(asset.path) || asset.page < 1 || asset.page > source.pageCount) {
       issues.push('图表编号、路径或原文页码无效');
     }
-    if (!asset.captionSource.trim() || !asset.captionChinese.trim() ||
-      !captionMatchesSource(asset, source)) issues.push(`${asset.id} 原始图注无法在原文核对`);
-    if (!/[\u3400-\u9fff]/.test(asset.captionChinese) || !/(?:\d|(?:图|表|算法|Figure|Table|Algorithm)\s*[IVXLCDM]+)/i.test(asset.captionChinese)) issues.push(`${asset.id} 缺少带编号的中文图注`);
+    issues.push(...assetProvenanceIssues(asset, source));
     if (!text.includes(`{{asset:${asset.id}}}`)) issues.push(`${asset.id} 没有放在正文解释附近`);
   }
   const inventory = [...new Set([...source.captions, ...result.sourceInventory])];

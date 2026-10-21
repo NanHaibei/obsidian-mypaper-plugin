@@ -2,7 +2,10 @@ import type { ReadingJob } from './jobs';
 
 /** Time since real protocol activity, not a fabricated completion percentage. */
 export function readingStatusText(job: ReadingJob, now = Date.now()): string {
-  if (job.status === 'failed') return `未完成：${job.error || '请从更多操作中重试'}`;
+  if (job.status === 'failed') {
+    const error = (job.error || '请从更多操作中重试').replace(/\s+/g, ' ');
+    return `未完成：${error.length > 110 ? error.slice(0, 110) + '…（更多操作可查看详情）' : error}`;
+  }
   if (job.status === 'queued') return '阅读笔记排队中';
   if (job.status !== 'running') return job.phase || job.status;
   const phase = job.phase || '等待模型响应';

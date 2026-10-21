@@ -12,3 +12,7 @@ test('failure reason is visible inline instead of hidden behind a tooltip',()=>{
  assert.equal(readingStatusText({status:'failed',phase:'未完成，可重试',error:'模型服务繁忙'}),'未完成：模型服务繁忙');
  assert.equal(readingStatusText({status:'completed',phase:'阅读笔记已完成'}),'阅读笔记已完成');
 });
+test('long model diagnostics stay intact in the job but do not fill the entire paper row',()=>{
+ const error='PDF 原文有未编号图表，缺少合法表示方式。'.repeat(50);const job={status:'failed',error};
+ const label=readingStatusText(job);assert.ok(label.length<150);assert.match(label,/查看详情/);assert.equal(job.error,error);
+});

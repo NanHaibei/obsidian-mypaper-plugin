@@ -14,10 +14,42 @@ async function load(entry) {
 const { validateReadingNote, renderReadingNote, appendReadingNote, noteHash } = await load('src/reading/noteContent.ts');
 const { normalizeReadingSettings } = await load('src/reading/config.ts');
 const { canonicalPaperId, ReadingJobStore } = await load('src/reading/jobs.ts');
+const { parseReadingResult } = await load('src/reading/result.ts');
 const titles = ['问题背景', '现有工作的问题与论文动机', '论文方法', '实验结果', '方法缺陷与未来工作'];
 export const validResult = () => ({ complete: true, markdown: titles.map((t, i) => `## ${i + 1}. ${t}✦\n\n解释对应问题与证据。✦${i === 2 ? '\n\n{{asset:Figure 1}}\n\n$$\nx_{t}=q^{*}\n$$' : ''}`).join('\n\n'),
   assets: [{ id: 'Figure 1', path: 'figures/fig1.png', captionSource: 'Figure 1: Original framework.', captionChinese: '图 1：原始框架。', page: 1 }], sourceInventory: ['Figure 1'], missing: [] });
 export const source = { url: 'https://arxiv.org/pdf/1706.03762', text: 'Figure 1: Original framework.', pageCount: 1, captions: ['Figure 1'] };
+
+test('unnumbered originals without captions retain explicit AI explanations and page-specific evidence',()=>{
+ const r=validResult(),id='Table (unnumbered, page 2)';
+ r.assets.push({id,path:'figures/table-no-caption.png',captionSource:'',captionChinese:'第 2 页未编号表（原文无独立表注；以下为 AI 说明）：模型结果。',page:2,captionStatus:'absent',sourceExcerpt:'Network capacity and model scaling results.'});
+ r.sourceInventory.push(id);r.markdown+=`\n\n{{asset:${id}}}`;
+ const s={...source,pageCount:2,pageTexts:[source.text,'Network capacity and model scaling results. Reward Goal Tracking'],text:source.text+'\nNetwork capacity and model scaling results.'};
+ assert.doesNotThrow(()=>validateReadingNote(r,s));
+ const check=mutate=>{const bad=structuredClone(r);mutate(bad.assets[1]);assert.throws(()=>validateReadingNote(bad,s));};
+ check(a=>a.sourceExcerpt='Invented evidence about model scaling results.');
+ check(a=>a.page=1);check(a=>a.id='Table (unnumbered, page 0)');
+ check(a=>a.captionSource='A made-up original caption.');
+ check(a=>a.captionChinese='第 2 页未编号表：模型结果。');
+ check(a=>a.captionStatus=undefined);check(a=>a.sourceExcerpt='Results.');
+ assert.throws(()=>validateReadingNote(r,{...s,pageTexts:undefined}),/原文定位片段/);
+ const disguised=structuredClone(r);disguised.assets.shift();disguised.markdown=disguised.markdown.replace('{{asset:Figure 1}}','');
+ assert.throws(()=>validateReadingNote(disguised,s),/Figure 1/);
+});
+test('an unnumbered original with a real caption still requires the original caption to match',()=>{
+ const r=validResult(),id='Figure (unnumbered, page 1, item 2)';
+ r.assets.push({id,path:'figures/unnum.png',captionSource:'Original environment layout.',captionChinese:'第 1 页未编号图：原始环境布局。',page:1,captionStatus:'present',sourceExcerpt:''});
+ r.markdown+=`\n\n{{asset:${id}}}`;r.sourceInventory.push(id);
+ const s={...source,text:source.text+'\nOriginal environment layout.'};
+ assert.doesNotThrow(()=>validateReadingNote(r,s));r.assets[1].captionSource='Invented environment layout.';
+ assert.throws(()=>validateReadingNote(r,s),/原始图注/);
+});
+test('structurally valid incomplete drafts are retained but can never be written as completed',()=>{
+ const r=validResult();r.complete=false;r.missing=['The PDF cannot be accessed.'];
+ const parsed=parseReadingResult(JSON.stringify(r));assert.equal(parsed.complete,false);
+ assert.throws(()=>validateReadingNote(parsed,source),/The PDF cannot be accessed/);
+ r.assets[0].captionStatus='unknown';assert.throws(()=>parseReadingResult(JSON.stringify(r)),/格式无效/);
+});
 
 test('settings migration keeps connection/model choices and removes the old prompt, switch and format', () => {
   const settings = normalizeReadingSettings({ model: 'chosen', effort: 'high', proxyUrl: 'http://localhost:7890',

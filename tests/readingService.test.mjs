@@ -100,6 +100,19 @@ test('layout and embedded drawing differences finish without paying for an unnec
  }finally{await h.dispose();}
 });
 
+test('an original unnumbered table without a caption can finish using explicit page evidence',async()=>{
+ let calls=0;const text='Scaling the network capacity. Reward Goal Tracking results.';
+ const id='Table (unnumbered, page 1)';
+ const h=await setup(async()=>{calls++;const output=result();output.markdown=output.markdown.replace('{{asset:Figure 1}}',`{{asset:${id}}}`);output.sourceInventory=[id];output.assets[0]={...output.assets[0],id,captionStatus:'absent',captionSource:'',sourceExcerpt:'Scaling the network capacity.',captionChinese:'第 1 页未编号表（原文无独立表注；以下为 AI 说明）：模型结果。'};return output;},undefined,{...source,text,captions:[],pageTexts:[text]});
+ try{const f=h.add('Papers/Unread/one.md');await h.reading.enqueue(f,paper('one','1706.03762'));await until(()=>h.reading.jobs[0].status==='completed');assert.equal(calls,1);assert.match(f.content,/原文无独立表注；以下为 AI 说明/);}
+ finally{await h.dispose();}
+});
+test('the latest incomplete correction remains cached and cannot write a partial note',async()=>{
+ let calls=0;const h=await setup(async()=>{calls++;const output=result();output.complete=false;output.missing=['Full paper evidence unavailable.'];output.markdown+=`\n\n第 ${calls} 轮保留的草稿。✦`;return output;});
+ try{const f=h.add('Papers/Unread/one.md');await h.reading.enqueue(f,paper('one','1706.03762'));await until(()=>h.reading.jobs[0].status==='failed');const j=h.reading.jobs[0];assert.equal(calls,2);assert.match(j.result.markdown,/第 2 轮/);assert.match(j.error,/Full paper evidence unavailable/);assert.equal(f.content,'## 笔记\n我写的想法\n');}
+ finally{await h.dispose();}
+});
+
 test('old rejected drafts are recovered on load and written without another model call',async()=>{
  let calls=0;const h=await setup(async()=>{calls++;throw Error('Must reuse cached draft');},async({base,dir,host,files})=>{
   files.set('Papers/Unread/one.md',new TFile('Papers/Unread/one.md'));
